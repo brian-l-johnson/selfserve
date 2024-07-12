@@ -11,6 +11,61 @@ q = asyncio.Queue()
 lock = asyncio.Lock()
 
 
+class PrinterManager:
+    def __init__(self, ip):
+        self.connect(ip)
+    
+    def connect(self, ip):
+        self.printer = Network(ip)
+
+    def check_connection(self):
+        if self.printer.is_online():
+            return True
+        return False
+
+    def print_order(self, order):
+        if not self.check_connection():
+            self.connect()
+        self.printer.image("/home/bj/logo.png")
+        self.printer.set(align="center", custom_size=True, width=4, height=4, density=8)
+        self.printer.textln(f"Order: {order['txn']}")
+        self.printer.set_with_default()
+        now = datetime.datetime.now()
+        self.printer.textln(f"on {now.date()} at {now.time()}")
+        self.printer.set(align="center")
+        self.printer.textln("================================================")
+        total = 0
+        for item in order["i"]:
+            sku = inventory[item['v']]
+            self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
+            self.printer.text(f"#{sku.id} : {sku.size} ")
+            self.printer.set_with_default()
+            self.printer.text(sku.description)
+            self.printer.ln()
+            self.printer.set_with_default(align="right", double_height=True, double_width=True)
+            self.printer.text(f"${sku.price}")
+            self.printer.textln()
+            self.printer.set_with_default()
+            total += sku.price
+        self.printer.set(align="center")
+        self.printer.textln("-----------------------------------------------")
+        self.printer.set_with_default(align="right", custom_size=True, width=2, height=2)
+        self.printer.textln(f"TOTAL: ${total}")
+        self.printer.set_with_default()
+        self.printer.textln("all prices include sales tax")
+        self.printer.set_with_default()
+        self.printer.qr(order, size=9,center=True)
+        self.printer.cut()
+        self.printer.set(align="center", custom_size=True, width=4, height=4, density=8)
+        self.printer.image("/home/bj/logo.png")
+        self.printer.textln(f"Order: {order['txn']}")
+        self.printer.textln(f"Total: ${total}")
+        self.printer.qr(order, size=9,center=True)
+        self.printer.eject_slip()
+        self.printer.cut()
+        self.printer.eject_slip()
+        self.printer.set_with_default()
+
 class InventoryItem:
     def __init__(self, id, sku, description, size, price):
         self.sku = sku
@@ -82,8 +137,12 @@ def parse_order(order):
             for item in order["i"]:
                 print(item)
                 print(item['v'])
-                print(inventory[item['v']])
-            print_order(order)
+                if item['v'] in inventory:
+                    print(inventory[item['v']])
+                else:
+                    print("item not in inventory")
+                    return False
+            pm.print_order(order)
             return True
         else:
             print("no txn")
@@ -91,49 +150,7 @@ def parse_order(order):
     else:
         return False
     
-        
-    
 
-def print_order(order):
-    printer.image("/home/bj/logo.png")
-    printer.set(align="center", custom_size=True, width=4, height=4, density=8)
-    printer.textln(f"Order: {order['txn']}")
-    printer.set_with_default()
-    now = datetime.datetime.now()
-    printer.textln(f"on {now.date()} at {now.time()}")
-    printer.set(align="center")
-    printer.textln("================================================")
-    total = 0
-    for item in order["i"]:
-        sku = inventory[item['v']]
-        printer.set_with_default(align="left", custom_size=True, width=2, height=2)
-        printer.text(f"#{sku.id} : {sku.size} ")
-        printer.set_with_default()
-        printer.text(sku.description)
-        printer.ln()
-        printer.set_with_default(align="right", double_height=True, double_width=True)
-        printer.text(f"${sku.price}")
-        printer.textln()
-        printer.set_with_default()
-        total += sku.price
-    printer.set(align="center")
-    printer.textln("-----------------------------------------------")
-    printer.set_with_default(align="right", custom_size=True, width=2, height=2)
-    printer.textln(f"TOTAL: ${total}")
-    printer.set_with_default()
-    printer.textln("all prices include sales tax")
-    printer.set_with_default()
-    printer.qr(order, size=9,center=True)
-    printer.cut()
-    printer.set(align="center", custom_size=True, width=4, height=4, density=8)
-    printer.image("/home/bj/logo.png")
-    printer.textln(f"Order: {order['txn']}")
-    printer.textln(f"Total: ${total}")
-    printer.qr(order, size=9,center=True)
-    printer.eject_slip()
-    printer.cut()
- 
-    printer.eject_slip()
 
 async def handle_barcode_scan(device):
     print(device.name)
@@ -300,8 +317,9 @@ class DisplayUI:
 async def main():
     background_tasks = []
 
-    global printer 
-    printer = Network("192.168.42.40",  profile="TM-T88V")
+    global pm
+    pm = PrinterManager("192.168.42.40")
+    #printer = Network("192.168.42.40",  profile="TM-T88V")
 
     
     devices = []
