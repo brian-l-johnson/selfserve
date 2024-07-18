@@ -5,11 +5,38 @@ import os
 import json
 from escpos.printer import Network
 import datetime
+import requests
+from requests.exceptions import HTTPError
+from dotenv import load_dotenv
 
 scanner_names = ["BF SCAN SCAN KEYBOARD"]
 q = asyncio.Queue()
 lock = asyncio.Lock()
 
+class Inventory:
+    def __init__(self):
+        self.inventory = {}
+        self.fetch_inventory()
+    def fetch_inventory(self):
+        try:
+            print(os.environ['INVENTORY_URL'])
+            response = requests.get(os.environ['INVENTORY_URL'])
+            response.raise_for_status()
+            jsonResponse = response.json()
+            print(jsonResponse)
+            for item in jsonResponse:
+                self.inventory[item['variant_id']] = InventoryItem(item['variant_id'],
+                                                              item['product_id'],
+                                                              item['product_title'],
+                                                              item['variant_code'],
+                                                              item['variant_price'],
+                                                              item['variant_stock_status'],
+                                                              item['product_is_eligibility_restricted'])
+                
+        except HTTPError as http_err:
+            print(f'HTTP error: {http_err}')
+        except Exception as err:
+            print(f'error requesting inventory: {err}')
 
 class PrinterManager:
     def __init__(self, ip):
@@ -67,16 +94,18 @@ class PrinterManager:
         self.printer.set_with_default()
 
 class InventoryItem:
-    def __init__(self, id, sku, description, size, price):
+    def __init__(self, id, sku, description, size, price, stock_status, restricted):
         self.sku = sku
         self.id = id
         self.description = description
         self.size = size
         self.price = price
+        self.stock_staus = stock_status
+        self.restricted = restricted
 
     def __str__(self):
         return str(self.id)+":"+str(self.sku)+" "+self.description+"("+self.size+")"+" $"+str(self.price)
-
+'''
 inventory = {
     1:  InventoryItem(1, 1, "some men's t-shirt", "S", 35),
     2:  InventoryItem(2, 1, "some men's t-shirt", "M", 35),
@@ -128,7 +157,7 @@ inventory = {
     49: InventoryItem(49, 9, "Shot Glass", "", 5),
     50: InventoryItem(50, 10, "Backpack", "", 5)
 }
-
+'''
 
 def parse_order(order):
     print(order)
@@ -137,7 +166,7 @@ def parse_order(order):
             for item in order["i"]:
                 print(item)
                 print(item['v'])
-                if item['v'] in inventory:
+                if item['v'] in inventory.inventory:
                     print(inventory[item['v']])
                 else:
                     print("item not in inventory")
@@ -315,11 +344,16 @@ class DisplayUI:
             
 
 async def main():
+    load_dotenv()
+    print(os.environ["INVENTORY_URL"])
     background_tasks = []
 
     global pm
     pm = PrinterManager("192.168.42.40")
     #printer = Network("192.168.42.40",  profile="TM-T88V")
+
+    global inventory
+    inventory = Inventory()
 
     
     devices = []
