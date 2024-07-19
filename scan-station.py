@@ -8,10 +8,28 @@ import datetime
 import requests
 from requests.exceptions import HTTPError
 from dotenv import load_dotenv
+import sqlite3
 
 scanner_names = ["BF SCAN SCAN KEYBOARD"]
 q = asyncio.Queue()
 lock = asyncio.Lock()
+
+class OrderDB:
+    def __init__(self, path):
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA foreign_keys = 1")
+            self.cursor = self.connection.cursor()
+            self.cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER)")
+            self.cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER)")
+            self.connection.commit()
+    def insert_order(self, order):
+        self.cursor.execute("INSERT INTO orders (items, total) VALUES (?, ?)", (order['count'], order['total']))
+        id = self.cursor.lastrowid
+        print(f"created order {id}")
+        for item in order['i']:
+            self.cursor.execute("INSERT INTO order_line (order_id, item) VALUES(?, ?)", (id, item['v']))
+        self.connection.commit()
+
 
 class Inventory:
     def __init__(self):
@@ -63,7 +81,7 @@ class PrinterManager:
         self.printer.textln("================================================")
         total = 0
         for item in order["i"]:
-            sku = inventory[item['v']]
+            sku = inventory.inventory[item['v']]
             self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
             self.printer.text(f"#{sku.id} : {sku.size} ")
             self.printer.set_with_default()
@@ -161,21 +179,35 @@ inventory = {
 
 def parse_order(order):
     print(order)
-    if 'txn' in order and 'i' in order:
-        if order['txn'] != "":
-            for item in order["i"]:
-                print(item)
-                print(item['v'])
-                if item['v'] in inventory.inventory:
-                    print(inventory[item['v']])
-                else:
-                    print("item not in inventory")
+    total = 0
+    count = 0
+    if 'i' in order:
+        for item in order["i"]:
+            print(item)
+            print(item['v'])
+            if item['v'] in inventory.inventory:
+                if inventory.inventory[item['v']].restricted == "Y":
+                    q.put_nowait({"error": "item is restricted"})
+                    print(f"item {item['v']} is restricted")
                     return False
-            pm.print_order(order)
-            return True
-        else:
-            print("no txn")
-            return False
+                if inventory.inventory[item['v']].stock_staus == "OUT":
+                    q.put_nowait({"error": "item out of stock"})
+                    print(f"item {item['v']} is out of stock")
+                    return False
+                else:
+                    print(inventory.inventory[item['v']])
+                    total += inventory.inventory[item['v']].price
+                    count += 1
+            else:
+                print(f"item {item['v']} not in inventory")
+                q.put_nowait({"error": "item not in inventory"})
+                return False
+        order['count'] = count
+        order['total'] = total
+        odb.insert_order(order)
+        pm.print_order(order)
+
+        return True
     else:
         return False
     
@@ -345,7 +377,6 @@ class DisplayUI:
 
 async def main():
     load_dotenv()
-    print(os.environ["INVENTORY_URL"])
     background_tasks = []
 
     global pm
@@ -354,6 +385,9 @@ async def main():
 
     global inventory
     inventory = Inventory()
+
+    global odb
+    odb = OrderDB(os.environ['DB_PATH'])
 
     
     devices = []
