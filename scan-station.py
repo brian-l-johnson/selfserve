@@ -3,7 +3,7 @@ import asyncio
 import evdev
 import os
 import json
-from escpos.printer import Network
+from escpos import printer
 import datetime
 import requests
 from requests.exceptions import HTTPError
@@ -19,8 +19,8 @@ class OrderDB:
             self.connection = sqlite3.connect(path)
             self.connection.execute("PRAGMA foreign_keys = 1")
             self.cursor = self.connection.cursor()
-            self.cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER)")
-            self.cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER)")
+            self.cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE)")
+            self.cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
             self.connection.commit()
     def insert_order(self, order):
         self.cursor.execute("INSERT INTO orders (items, total) VALUES (?, ?)", (order['count'], order['total']))
@@ -41,7 +41,7 @@ class Inventory:
             response = requests.get(os.environ['INVENTORY_URL'])
             response.raise_for_status()
             jsonResponse = response.json()
-            print(jsonResponse)
+            #print(jsonResponse)
             for item in jsonResponse:
                 self.inventory[item['variant_id']] = InventoryItem(item['variant_id'],
                                                               item['product_id'],
@@ -57,11 +57,28 @@ class Inventory:
             print(f'error requesting inventory: {err}')
 
 class PrinterManager:
-    def __init__(self, ip):
-        self.connect(ip)
+    def __init__(self):
+        self.connect()
+
+    def connect(self):
+        if(os.environ["PRINTER_CONN"] == "net"):
+            self.connect_net(os.environ["PRINTER_IP"])
+        elif(os.environ["PRINTER_CONN"] == "usb"):
+            self.connect_usb(os.environ["PRINTER_VENDOR"], os.environ["PRINTER_PRODUCT"])
+        else:
+            print("unknown printer connection type")
+            exit(-1)        
+
+    def connect_usb(self, vendor, product):
+        print("connecting to usb printer")
+        print(f"printer.Usb({vendor}, {product})")
+        self.printer = printer.Usb(int(vendor, base=16), int(product, base=16), in_ep=0x81, out_ep=0x01, profile=os.environ['PRINTER_PROFILE'])
+        #self.printer = printer.Usb(0x0fe6, 0x811e, in_ep=0x81, out_ep=0x01)
+        
     
-    def connect(self, ip):
-        self.printer = Network(ip)
+    def connect_net(self, ip):
+        print("connecting to network printer")
+        self.printer = printer.Network(ip, profile=os.environ['PRINTER_PROFILE'])
 
     def check_connection(self):
         if self.printer.is_online():
@@ -380,7 +397,7 @@ async def main():
     background_tasks = []
 
     global pm
-    pm = PrinterManager("192.168.42.40")
+    pm = PrinterManager()
     #printer = Network("192.168.42.40",  profile="TM-T88V")
 
     global inventory
