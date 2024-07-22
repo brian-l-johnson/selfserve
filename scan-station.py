@@ -20,14 +20,14 @@ class OrderDB:
             self.connection.execute("PRAGMA foreign_keys = 1")
             self.cursor = self.connection.cursor()
             self.cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE)")
-            self.cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
+            self.cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, quantity INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
             self.connection.commit()
     def insert_order(self, order):
         self.cursor.execute("INSERT INTO orders (items, total) VALUES (?, ?)", (order['count'], order['total']))
         id = self.cursor.lastrowid
         print(f"created order {id}")
         for item in order['i']:
-            self.cursor.execute("INSERT INTO order_line (order_id, item) VALUES(?, ?)", (id, item['v']))
+            self.cursor.execute("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", (id, item['v'], item['q']))
         self.connection.commit()
 
 
@@ -99,16 +99,18 @@ class PrinterManager:
         total = 0
         for item in order["i"]:
             sku = inventory.inventory[item['v']]
-            self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
-            self.printer.text(f"#{sku.id} : {sku.size} ")
-            self.printer.set_with_default()
-            self.printer.text(sku.description)
-            self.printer.ln()
-            self.printer.set_with_default(align="right", double_height=True, double_width=True)
-            self.printer.text(f"${sku.price}")
-            self.printer.textln()
-            self.printer.set_with_default()
-            total += sku.price
+            q = int(item['q'])
+            for i in range(q):
+                self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
+                self.printer.text(f"#{sku.id} : {sku.size} ")
+                self.printer.set_with_default()
+                self.printer.text(sku.description)
+                self.printer.ln()
+                self.printer.set_with_default(align="right", double_height=True, double_width=True)
+                self.printer.text(f"${sku.price}")
+                self.printer.textln()
+                self.printer.set_with_default()
+                total += sku.price
         self.printer.set(align="center")
         self.printer.textln("-----------------------------------------------")
         self.printer.set_with_default(align="right", custom_size=True, width=2, height=2)
@@ -134,70 +136,30 @@ class InventoryItem:
         self.id = id
         self.description = description
         self.size = size
-        self.price = price
+        self.price = int(price)/100
         self.stock_staus = stock_status
         self.restricted = restricted
 
     def __str__(self):
         return str(self.id)+":"+str(self.sku)+" "+self.description+"("+self.size+")"+" $"+str(self.price)
-'''
-inventory = {
-    1:  InventoryItem(1, 1, "some men's t-shirt", "S", 35),
-    2:  InventoryItem(2, 1, "some men's t-shirt", "M", 35),
-    3:  InventoryItem(3, 1, "some men's t-shirt", "L", 35),
-    4:  InventoryItem(4, 1, "some men's t-shirt", "XL", 35),
-    5:  InventoryItem(5, 1, "some men's t-shirt", "XXL", 35),
-    6:  InventoryItem(6, 1, "some men's t-shirt", "XXXL", 35),
-    7:  InventoryItem(7, 1, "some men's t-shirt", "4XL", 35),
-    8:  InventoryItem(8, 1, "some men's t-shirt", "5XL", 35),
-    9:  InventoryItem(9, 1, "some men's t-shirt", "6XL", 35),
-    10: InventoryItem(10, 2, "some women's t-shirt", "XS", 35),
-    11: InventoryItem(11, 2, "some women's t-shirt", "S", 35),
-    12: InventoryItem(12, 2, "some women's t-shirt", "M", 35),
-    13: InventoryItem(13, 2, "some women's t-shirt", "L", 35),
-    14: InventoryItem(14, 2, "some women's t-shirt", "XL", 35),
-    15: InventoryItem(15, 2, "some women's t-shirt", "XXL", 35),
-    16: InventoryItem(16, 2, "some women's t-shirt", "3XL", 35),
-    17: InventoryItem(17, 2, "some women's t-shirt", "4XL", 35),
-    18: InventoryItem(18, 3, "another men's t-shirt", "S", 35),
-    19: InventoryItem(19, 3, "another men's t-shirt", "M", 35),
-    20: InventoryItem(20, 3, "another men's t-shirt", "L", 35),
-    21: InventoryItem(21, 3, "another men's t-shirt", "XL", 35),
-    22: InventoryItem(22, 3, "another men's t-shirt", "XXL", 35),
-    23: InventoryItem(23, 3, "another men's t-shirt", "XXXL", 35),
-    24: InventoryItem(24, 3, "another men's t-shirt", "4XL", 35),
-    25: InventoryItem(25, 3, "another men's t-shirt", "5XL", 35),
-    26: InventoryItem(26, 3, "another men's t-shirt", "6XL", 35),
-    27: InventoryItem(27, 4, "another women's t-shirt", "XS", 35),
-    28: InventoryItem(28, 4, "another women's t-shirt", "S", 35),
-    29: InventoryItem(29, 4, "another women's t-shirt", "M", 35),
-    30: InventoryItem(30, 4, "another women's t-shirt", "L", 35),
-    31: InventoryItem(31, 4, "another women's t-shirt", "XL", 35),
-    32: InventoryItem(32, 4, "another women's t-shirt", "XXL", 35),
-    33: InventoryItem(33, 4, "another women's t-shirt", "3XL", 35),
-    34: InventoryItem(34, 4, "another women's t-shirt", "4XL", 35),
-    35: InventoryItem(35, 5, "polo shirt", "S", 35),
-    36: InventoryItem(36, 5, "polo shirt", "M", 35),
-    37: InventoryItem(37, 5, "polo shirt", "L", 35),
-    38: InventoryItem(38, 5, "polo shirt", "XL", 35),
-    39: InventoryItem(39, 5, "polo shirt", "XXL", 35),
-    40: InventoryItem(40, 5, "polo shirt", "XXXL", 35),
-    41: InventoryItem(41, 5, "polo shirt", "4XL", 35),
-    42: InventoryItem(42, 5, "polo shirt", "5XL", 35),
-    43: InventoryItem(43, 5, "polo shirt", "6XL", 35),
-    45: InventoryItem(44, 6, "Pin", "", 5),
-    46: InventoryItem(46, 7, "Sticker", "", 5),
-    47: InventoryItem(47, 8, "Hat", "SM", 5),
-    48: InventoryItem(48, 8, "Hat", "LXL", 5),
-    49: InventoryItem(49, 9, "Shot Glass", "", 5),
-    50: InventoryItem(50, 10, "Backpack", "", 5)
-}
-'''
 
 def parse_order(order):
     print(order)
     total = 0
     count = 0
+
+    order_keys = order.keys()
+    for k in order_keys:
+        if k not in ["i", "txn"]:
+            q.put_nowait({"error": "unknown item in order"})
+            return False
+    if "i" not in order:
+        q.put_nowait({"error": "order missing items"})
+        return False
+    if "txn" not in order:
+        q.put_nowait({"error": "order missing txnid"})
+        return False
+            
     if 'i' in order:
         for item in order["i"]:
             print(item)
@@ -213,8 +175,14 @@ def parse_order(order):
                     return False
                 else:
                     print(inventory.inventory[item['v']])
-                    total += inventory.inventory[item['v']].price
-                    count += 1
+                    q = int(item['q'])
+                    if(q > 0):
+                        print(item['q'])
+                        total += q*inventory.inventory[item['v']].price
+                        count += int(item['q'])
+                    else:
+                        q.put_nowait({"error": "invalid qunatity"})
+                        return False
             else:
                 print(f"item {item['v']} not in inventory")
                 q.put_nowait({"error": "item not in inventory"})
