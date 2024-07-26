@@ -1,3 +1,4 @@
+import aiohttp.web_exceptions
 import pygame
 import asyncio
 import evdev
@@ -9,6 +10,8 @@ import requests
 from requests.exceptions import HTTPError
 from dotenv import load_dotenv
 import sqlite3
+import aiohttp
+from aiohttp.web_exceptions import HTTPError
 
 scanner_names = ["BF SCAN SCAN KEYBOARD"]
 q = asyncio.Queue()
@@ -29,6 +32,13 @@ class OrderDB:
         for item in order['i']:
             self.cursor.execute("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", (id, item['v'], item['q']))
         self.connection.commit()
+        return id
+    def mark_order_synced(self, id):
+        try:
+            self.cursor.execute("UPDATE orders SET synced=TRUE WHERE id = ?", (id,))
+            self.connection.commit()
+        except sqlite3.Error as err:
+            print(f"error updating order: {err}")
 
 
 class Inventory:
@@ -50,6 +60,7 @@ class Inventory:
                                                               item['variant_price'],
                                                               item['variant_stock_status'],
                                                               item['product_is_eligibility_restricted'])
+            print(self.inventory)
                 
         except HTTPError as http_err:
             print(f'HTTP error: {http_err}')
@@ -136,17 +147,40 @@ class InventoryItem:
         self.id = id
         self.description = description
         self.size = size
-        self.price = int(price)/100
+        self.price_long = int(price)
+        self.price = int(price/100)
         self.stock_staus = stock_status
         self.restricted = restricted
 
     def __str__(self):
         return str(self.id)+":"+str(self.sku)+" "+self.description+"("+self.size+")"+" $"+str(self.price)
 
+async def sync_order(orderobj, id):
+    print("in sync order")
+    try:
+        async with aiohttp.ClientSession() as session:
+            resp = await session.post('https://confmgr3.junctorconf.net/conf/merch_addtxn.php', json=orderobj)
+            print("sent order")
+            print(resp)
+            print("content")
+            print(await resp.json())
+            if resp.status == 200:
+                odb.mark_order_synced(id)
+                print("order synced")
+            else:
+                print("failed to sync order")
+    except aiohttp.web_exceptions.HTTPError as http_err:
+        print(f'HTTP error: {http_err}')
+    except Exception as err:
+        print(f'error sending order: {err}')
+
 def parse_order(order):
     print(order)
     total = 0
     count = 0
+
+    orderobj = {}
+    items = []
 
     order_keys = order.keys()
     for k in order_keys:
@@ -175,10 +209,11 @@ def parse_order(order):
                     return False
                 else:
                     print(inventory.inventory[item['v']])
-                    q = int(item['q'])
-                    if(q > 0):
+                    quantity = int(item['q'])
+                    if(quantity > 0):
+                        items.append({"variant_id": item['v'], "quantity": item['q'], "price_each_long": inventory.inventory[item['v']].price_long})
                         print(item['q'])
-                        total += q*inventory.inventory[item['v']].price
+                        total += quantity*inventory.inventory[item['v']].price
                         count += int(item['q'])
                     else:
                         q.put_nowait({"error": "invalid qunatity"})
@@ -189,8 +224,20 @@ def parse_order(order):
                 return False
         order['count'] = count
         order['total'] = total
-        odb.insert_order(order)
+        id = odb.insert_order(order)
         pm.print_order(order)
+
+        orderobj['device_id'] = 63 #os.environ['DEVICE_ID']
+        orderobj['conference_id'] = 96 #os.environ['CONFERENCE_ID']
+        orderobj['passcode'] = os.environ['PASSCODE']
+        orderobj['timestamp'] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S-00:00")
+        orderobj['txn_num'] = os.environ['STATION']+"-"+str(id)
+        orderobj['items'] = items
+        #orderobj['ref_txn_num'] = "A-123"
+
+        print(orderobj)
+        loop.create_task(sync_order(orderobj, id))
+        #sync_order(orderobj)
 
         return True
     else:
@@ -362,7 +409,10 @@ class DisplayUI:
 
 async def main():
     load_dotenv()
+    global background_tasks
     background_tasks = []
+    global loop
+    loop = asyncio.get_event_loop()
 
     global pm
     pm = PrinterManager()
