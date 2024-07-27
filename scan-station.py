@@ -21,21 +21,26 @@ class OrderDB:
     def __init__(self, path):
             self.connection = sqlite3.connect(path)
             self.connection.execute("PRAGMA foreign_keys = 1")
-            self.cursor = self.connection.cursor()
-            self.cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE)")
-            self.cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, quantity INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
+            cursor = self.connection.cursor()
+            cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, quantity INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
             self.connection.commit()
     def insert_order(self, order):
-        self.cursor.execute("INSERT INTO orders (items, total) VALUES (?, ?)", (order['count'], order['total']))
-        id = self.cursor.lastrowid
+        cursor = self.connection.cursor()
+        cursor.execute("INSERT INTO orders (items, total) VALUES (?, ?)", (order['count'], order['total']))
+        id = cursor.lastrowid
         print(f"created order {id}")
+        data = []
         for item in order['i']:
-            self.cursor.execute("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", (id, item['v'], item['q']))
-        self.connection.commit()
+            data.append((id, item['v'], item['q']))
+            #cursor.execute("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", (id, item['v'], item['q']))
+        #self.connection.commit()
+        cursor.executemany("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", data)
         return id
     def mark_order_synced(self, id):
         try:
-            self.cursor.execute("UPDATE orders SET synced=TRUE WHERE id = ?", (id,))
+            cursor = self.connection.cursor()
+            cursor.execute("UPDATE orders SET synced=TRUE WHERE id = ?", (id,))
             self.connection.commit()
         except sqlite3.Error as err:
             print(f"error updating order: {err}")
@@ -46,6 +51,7 @@ class Inventory:
         self.inventory = {}
         self.fetch_inventory()
     def fetch_inventory(self):
+        print("syncing inventory")
         try:
             print(os.environ['INVENTORY_URL'])
             response = requests.get(os.environ['INVENTORY_URL'])
@@ -54,13 +60,13 @@ class Inventory:
             #print(jsonResponse)
             for item in jsonResponse:
                 self.inventory[item['variant_id']] = InventoryItem(item['variant_id'],
-                                                              item['product_id'],
+                                                              item['product_code'],
                                                               item['product_title'],
                                                               item['variant_code'],
                                                               item['variant_price'],
                                                               item['variant_stock_status'],
                                                               item['product_is_eligibility_restricted'])
-            print(self.inventory)
+            #print(self.inventory)
                 
         except HTTPError as http_err:
             print(f'HTTP error: {http_err}')
@@ -99,43 +105,55 @@ class PrinterManager:
     def print_order(self, order):
         if not self.check_connection():
             self.connect()
+        self.printer.set_with_default(align="center")
         self.printer.image("/home/bj/logo.png")
-        self.printer.set(align="center", custom_size=True, width=4, height=4, density=8)
+        self.printer.set_with_default(align="center", custom_size=True, width=3, height=3, density=8)
         self.printer.textln(f"Order: {order['txn']}")
-        self.printer.set_with_default()
+        self.printer.set_with_default(align="center")
         now = datetime.datetime.now()
         self.printer.textln(f"on {now.date()} at {now.time()}")
         self.printer.set(align="center")
         self.printer.textln("================================================")
         total = 0
-        for item in order["i"]:
-            sku = inventory.inventory[item['v']]
-            q = int(item['q'])
-            for i in range(q):
-                self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
-                self.printer.text(f"#{sku.id} : {sku.size} ")
-                self.printer.set_with_default()
-                self.printer.text(sku.description)
-                self.printer.ln()
-                self.printer.set_with_default(align="right", double_height=True, double_width=True)
-                self.printer.text(f"${sku.price}")
-                self.printer.textln()
-                self.printer.set_with_default()
-                total += sku.price
+        for item in order["items"]:
+            self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
+            self.printer.textln(f"{item['sku']} : {item['size']}")
+            self.printer.set_with_default(custom_size=True, width=1, height=1)
+            self.printer.textln(item['description'])
+            self.printer.set_with_default(align="right", double_height=True, double_width=True)
+            self.printer.text(f"${item['price']}")
+            self.printer.textln()
+            self.printer.set_with_default()
+            #sku = inventory.inventory[item['v']]
+            #q = int(item['q'])
+            #for i in range(q):
+            #    self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
+            #    self.printer.text(f"#{sku.sku} : {sku.size} ")
+            #    self.printer.set_with_default()
+            #    self.printer.text(sku.description)
+            #    self.printer.ln()
+            #    self.printer.set_with_default(align="right", double_height=True, double_width=True)
+            #    self.printer.text(f"${sku.price}")
+            #    self.printer.textln()
+            #    self.printer.set_with_default()
+            #    total += sku.price
         self.printer.set(align="center")
         self.printer.textln("-----------------------------------------------")
         self.printer.set_with_default(align="right", custom_size=True, width=2, height=2)
-        self.printer.textln(f"TOTAL: ${total}")
+        self.printer.textln(f"TOTAL: ${order['total']}")
         self.printer.set_with_default()
         self.printer.textln("all prices include sales tax")
         self.printer.set_with_default()
-        self.printer.qr(order, size=9,center=True)
+        self.printer.qr(order['qr'], size=9,center=True)
         self.printer.cut()
-        self.printer.set(align="center", custom_size=True, width=4, height=4, density=8)
+        self.printer.set(align="center", custom_size=True, width=3, height=3, density=8)
         self.printer.image("/home/bj/logo.png")
         self.printer.textln(f"Order: {order['txn']}")
-        self.printer.textln(f"Total: ${total}")
-        self.printer.qr(order, size=9,center=True)
+        self.printer.textln(f"Total: ${order['total']}")
+        self.printer.qr(order['qr'], size=9,center=True)
+        self.printer.set_with_default()
+        self.printer.textln("all prices include sales tax")
+        self.printer.ln(3)
         self.printer.eject_slip()
         self.printer.cut()
         self.printer.eject_slip()
@@ -193,7 +211,8 @@ def parse_order(order):
     if "txn" not in order:
         q.put_nowait({"error": "order missing txnid"})
         return False
-            
+    oi = []
+
     if 'i' in order:
         for item in order["i"]:
             print(item)
@@ -211,6 +230,8 @@ def parse_order(order):
                     print(inventory.inventory[item['v']])
                     quantity = int(item['q'])
                     if(quantity > 0):
+                        for i in range(quantity):
+                            oi.append({"id": item['v'], "sku": inventory.inventory[item['v']].sku, "price": inventory.inventory[item['v']].price, "description": inventory.inventory[item['v']].description, "size": inventory.inventory[item['v']].size})
                         items.append({"variant_id": item['v'], "quantity": item['q'], "price_each_long": inventory.inventory[item['v']].price_long})
                         print(item['q'])
                         total += quantity*inventory.inventory[item['v']].price
@@ -222,13 +243,22 @@ def parse_order(order):
                 print(f"item {item['v']} not in inventory")
                 q.put_nowait({"error": "item not in inventory"})
                 return False
-        order['count'] = count
-        order['total'] = total
-        id = odb.insert_order(order)
-        pm.print_order(order)
+        eo = order.copy()
+        eo['count'] = count
+        eo['total'] = total
+        id = odb.insert_order(eo)
 
-        orderobj['device_id'] = 63 #os.environ['DEVICE_ID']
-        orderobj['conference_id'] = 96 #os.environ['CONFERENCE_ID']
+        sorted_items = sorted(oi, key=lambda d: d['sku'])
+        o = {"txn": os.environ['STATION']+"-"+str(id),
+             "total": total,
+             "count": count,
+             "items": sorted_items,
+             "qr": order }
+        
+        pm.print_order(o)
+
+        orderobj['device_id'] = os.environ['DEVICE_ID']
+        orderobj['conference_id'] = os.environ['CONFERENCE_ID']
         orderobj['passcode'] = os.environ['PASSCODE']
         orderobj['timestamp'] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S-00:00")
         orderobj['txn_num'] = os.environ['STATION']+"-"+str(id)
@@ -237,6 +267,7 @@ def parse_order(order):
 
         print(orderobj)
         loop.create_task(sync_order(orderobj, id))
+        inventory.fetch_inventory()
         #sync_order(orderobj)
 
         return True
