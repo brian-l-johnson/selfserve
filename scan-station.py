@@ -23,7 +23,7 @@ class OrderDB:
             self.connection.execute("PRAGMA foreign_keys = 1")
             cursor = self.connection.cursor()
             cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE)")
-            cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, quantity INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
+            cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, quantity INTEGER, pricelong INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
             self.connection.commit()
     def insert_order(self, order):
         cursor = self.connection.cursor()
@@ -32,10 +32,8 @@ class OrderDB:
         print(f"created order {id}")
         data = []
         for item in order['i']:
-            data.append((id, item['v'], item['q']))
-            #cursor.execute("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", (id, item['v'], item['q']))
-        #self.connection.commit()
-        cursor.executemany("INSERT INTO order_line (order_id, item, quantity) VALUES(?, ?, ?)", data)
+            data.append((id, item['v'], item['q'], inventory.inventory[item['v']].price_long))
+        cursor.executemany("INSERT INTO order_line (order_id, item, quantity, pricelong) VALUES(?, ?, ?, ?)", data)
         return id
     def mark_order_synced(self, id):
         try:
@@ -44,6 +42,23 @@ class OrderDB:
             self.connection.commit()
         except sqlite3.Error as err:
             print(f"error updating order: {err}")
+    def get_unsynced_orders(self):
+        orders = []
+        cursor = self.connection.cursor()
+        cursor.execute("SELECT id, total, t FROM orders WHERE synced=0")
+        for o in cursor.fetchall():
+            order = {}
+            order['device_id'] = os.environ['DEVICE_ID']
+            order['conference_id'] = os.environ['CONFERENCE_ID']
+            order['passcode'] = os.environ['PASSCODE']
+            order['timestamp'] = o[2]+"-00:00"
+            order['txn_num'] = os.environ['STATION']+"-"+str(o[0])
+            order['items'] = []
+            cursor.execute("SELECT item, quantity, pricelong FROM order_line WHERE order_id=?", (o[0],))
+            for i in cursor.fetchall():
+                order['items'].append({"variant_id": i[0], "quantity": i[1], "price_each_long": i[2]})
+            orders.append({"id": o[0], "order": order})
+        return orders
 
 
 class Inventory:
@@ -124,19 +139,6 @@ class PrinterManager:
             self.printer.text(f"${item['price']}")
             self.printer.textln()
             self.printer.set_with_default()
-            #sku = inventory.inventory[item['v']]
-            #q = int(item['q'])
-            #for i in range(q):
-            #    self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
-            #    self.printer.text(f"#{sku.sku} : {sku.size} ")
-            #    self.printer.set_with_default()
-            #    self.printer.text(sku.description)
-            #    self.printer.ln()
-            #    self.printer.set_with_default(align="right", double_height=True, double_width=True)
-            #    self.printer.text(f"${sku.price}")
-            #    self.printer.textln()
-            #    self.printer.set_with_default()
-            #    total += sku.price
         self.printer.set(align="center")
         self.printer.textln("-----------------------------------------------")
         self.printer.set_with_default(align="right", custom_size=True, width=2, height=2)
@@ -173,6 +175,13 @@ class InventoryItem:
     def __str__(self):
         return str(self.id)+":"+str(self.sku)+" "+self.description+"("+self.size+")"+" $"+str(self.price)
 
+def bulk_sync_order():
+    orders = odb.get_unsynced_orders()
+    for o in orders:
+        print(f"attempting to sync order {o['id']}")
+        loop.create_task(sync_order(o['order'], o['id']))
+        
+
 async def sync_order(orderobj, id):
     print("in sync order")
     try:
@@ -185,6 +194,7 @@ async def sync_order(orderobj, id):
             if resp.status == 200:
                 odb.mark_order_synced(id)
                 print("order synced")
+                bulk_sync_order()
             else:
                 print("failed to sync order")
     except aiohttp.web_exceptions.HTTPError as http_err:
@@ -269,6 +279,7 @@ def parse_order(order):
         loop.create_task(sync_order(orderobj, id))
         inventory.fetch_inventory()
         #sync_order(orderobj)
+        bulk_sync_order()
 
         return True
     else:
@@ -454,7 +465,7 @@ async def main():
 
     global odb
     odb = OrderDB(os.environ['DB_PATH'])
-
+    bulk_sync_order()
     
     devices = []
     for filename in os.listdir("/dev/input/by-path"):
