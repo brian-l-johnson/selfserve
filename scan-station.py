@@ -105,9 +105,7 @@ class PrinterManager:
         print("connecting to usb printer")
         print(f"printer.Usb({vendor}, {product})")
         self.printer = printer.Usb(int(vendor, base=16), int(product, base=16), in_ep=0x81, out_ep=0x01, profile=os.environ['PRINTER_PROFILE'])
-        #self.printer = printer.Usb(0x0fe6, 0x811e, in_ep=0x81, out_ep=0x01)
-        
-    
+            
     def connect_net(self, ip):
         print("connecting to network printer")
         self.printer = printer.Network(ip, profile=os.environ['PRINTER_PROFILE'])
@@ -278,7 +276,6 @@ def parse_order(order):
         print(orderobj)
         loop.create_task(sync_order(orderobj, id))
         inventory.fetch_inventory()
-        #sync_order(orderobj)
         bulk_sync_order()
 
         return True
@@ -361,12 +358,17 @@ class DisplayUI:
 
         ws = pygame.display.get_window_size()
 
-        self.font = pygame.font.Font('freesansbold.ttf', 64)
-        self.header = self.font.render('DEF CON 32 Merch', True, self.GREEN, self.BLUE)
+        self.header_font = pygame.font.Font('freesansbold.ttf', 96)
+        self.header = self.header_font.render('DEF CON 32 Merch', True, self.GREEN, self.BLUE)
         self.header_rect = self.header.get_rect()
         self.header_rect.centerx = ws[0]/2
-        self.header_rect.centery = 40
+        self.header_rect.centery = 56
 
+        self.font = pygame.font.Font('freesansbold.ttf', 64)
+
+        #print(pygame.font.get_fonts())
+
+        '''
         self.scan_instruction = self.font.render("Please scan your barcode", True, self.GREEN, self.BLUE)
         self.scan_instruction_rect = self.scan_instruction.get_rect()
         self.scan_instruction_rect.centerx = ws[0]/2
@@ -386,7 +388,12 @@ class DisplayUI:
         self.badorder_rect = self.goodorder.get_rect()
         self.badorder_rect.centerx = ws[0]/2
         self.badorder_rect.centery = ws[1]/2
+        '''
 
+        self.text_lines = [
+            "Please scan your barcode",
+            "some more text"
+        ]
         
 
         self.DEBOUNCE = pygame.USEREVENT+1
@@ -396,9 +403,25 @@ class DisplayUI:
 
         self.running = True
 
+    def render_text(self):
+        rendered_fonts = []
+        ws = pygame.display.get_window_size()
+        num_lines = len(self.text_lines)
+
+
+        for i in range(len(self.text_lines)):
+            txt_surf = self.font.render(self.text_lines[i], True, self.BLACK, self.RED)
+            txt_rect = txt_surf.get_rect()
+            txt_rect.centerx = ws[0]/2
+            #txt_rect.centery = self.header_rect.h*2 + (txt_rect.h+10)*i
+            txt_rect.centery = ws[1]/2 + ((i+1) - ((num_lines+1)/2))*(txt_rect.h+5)
+            rendered_fonts.append((txt_surf, txt_rect))
+        return rendered_fonts
+
+
     async def run(self):
-        message = self.scan_instruction
-        message_rect = self.scan_instruction_rect
+        #message = self.scan_instruction
+        #message_rect = self.scan_instruction_rect
         while self.running:
             try:
                 event = q.get_nowait()
@@ -418,7 +441,11 @@ class DisplayUI:
                 pass
 
             self.screen.blit(self.header, self.header_rect)
-            self.screen.blit(message, message_rect)
+            #self.screen.blit(message, message_rect)
+            
+            for txt_surf, txt_rect in self.render_text():
+                self.screen.blit(txt_surf, txt_rect)
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -426,22 +453,22 @@ class DisplayUI:
                         task.cancel()
                 if event.type == self.SCANERROR:
                     self.screen.fill(self.RED)
-                    message = self.error_instruction
-                    message_rect = self.error_instruction_rect
+                    #message = self.error_instruction
+                    #message_rect = self.error_instruction_rect
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
                 if event.type == self.DEBOUNCE:
                     self.screen.fill(self.BLACK)
-                    message = self.scan_instruction
-                    message_rect = self.scan_instruction_rect
+                    #message = self.scan_instruction
+                    #message_rect = self.scan_instruction_rect
                 if event.type == self.GOODORDER:
                     self.screen.fill(self.GREEN)
-                    message = self.goodorder
-                    message_rect = self.goodorder_rect
+                    #message = self.goodorder
+                    #message_rect = self.goodorder_rect
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
                 if event.type == self.BADORDER:
                     self.screen.fill(self.RED)
-                    message = self.badorder
-                    message_rect = self.badorder_rect
+                    #message = self.badorder
+                    #message_rect = self.badorder_rect
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
                     
                     #self.screen.blit(self.error_instruction, self.error_instruction_rect)
@@ -458,7 +485,6 @@ async def main():
 
     global pm
     pm = PrinterManager()
-    #printer = Network("192.168.42.40",  profile="TM-T88V")
 
     global inventory
     inventory = Inventory()
