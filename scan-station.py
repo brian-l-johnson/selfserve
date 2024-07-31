@@ -17,6 +17,7 @@ scanner_names = ["BF SCAN SCAN KEYBOARD"]
 q = asyncio.Queue()
 lock = asyncio.Lock()
 
+
 class OrderDB:
     def __init__(self, path):
             self.connection = sqlite3.connect(path)
@@ -245,11 +246,11 @@ def parse_order(order):
                         total += quantity*inventory.inventory[item['v']].price
                         count += int(item['q'])
                     else:
-                        q.put_nowait({"error": "invalid qunatity"})
+                        q.put_nowait({"error": "invalid quantity"})
                         return False
             else:
                 print(f"item {item['v']} not in inventory")
-                q.put_nowait({"error": "item not in inventory"})
+                q.put_nowait({"error": "unknown item in order"})
                 return False
         eo = order.copy()
         eo['count'] = count
@@ -258,11 +259,11 @@ def parse_order(order):
 
         sorted_items = sorted(oi, key=lambda d: d['sku'])
         o = {"txn": os.environ['STATION']+"-"+str(id),
-             "total": total,
-             "count": count,
-             "items": sorted_items,
-             "qr": order }
-        
+            "total": total,
+            "count": count,
+            "items": sorted_items,
+            "qr": order }
+
         pm.print_order(o)
 
         orderobj['device_id'] = os.environ['DEVICE_ID']
@@ -271,7 +272,6 @@ def parse_order(order):
         orderobj['timestamp'] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S-00:00")
         orderobj['txn_num'] = os.environ['STATION']+"-"+str(id)
         orderobj['items'] = items
-        #orderobj['ref_txn_num'] = "A-123"
 
         print(orderobj)
         loop.create_task(sync_order(orderobj, id))
@@ -282,8 +282,6 @@ def parse_order(order):
     else:
         return False
     
-
-
 async def handle_barcode_scan(device):
     print(device.name)
     scancodes = {
@@ -356,50 +354,32 @@ class DisplayUI:
         self.RED = (255, 0, 0)
         self.BLACK = (0,0,0)
 
+        self.TEXT = (255, 172, 11)
+        self.PRIMARY = (137,43,225)
+        self.SUCCESS = (10, 121, 133)
+        self.ERROR = (219, 22, 117)
+
         ws = pygame.display.get_window_size()
 
         self.header_font = pygame.font.Font('freesansbold.ttf', 96)
-        self.header = self.header_font.render('DEF CON 32 Merch', True, self.GREEN, self.BLUE)
+        self.header = self.header_font.render('DEF CON 32 Merch', True, self.TEXT)
         self.header_rect = self.header.get_rect()
         self.header_rect.centerx = ws[0]/2
         self.header_rect.centery = 56
 
         self.font = pygame.font.Font('freesansbold.ttf', 64)
 
-        #print(pygame.font.get_fonts())
-
-        '''
-        self.scan_instruction = self.font.render("Please scan your barcode", True, self.GREEN, self.BLUE)
-        self.scan_instruction_rect = self.scan_instruction.get_rect()
-        self.scan_instruction_rect.centerx = ws[0]/2
-        self.scan_instruction_rect.centery = ws[1]/2
-
-        self.error_instruction = self.font.render("Unable to process order", True, self.BLACK, self.RED)
-        self.error_instruction_rect = self.error_instruction.get_rect()
-        self.error_instruction_rect.centerx = ws[0]/2
-        self.error_instruction_rect.centery = ws[1]/2
-
-        self.goodorder = self.font.render("Please take your receipt", True, self.GREEN, self.BLUE)
-        self.goodorder_rect = self.goodorder.get_rect()
-        self.goodorder_rect.centerx = ws[0]/2
-        self.goodorder_rect.centery = ws[1]/2
-
-        self.badorder = self.font.render("There was an issue with your order, see a Goon", True, self.BLACK, self.RED)
-        self.badorder_rect = self.goodorder.get_rect()
-        self.badorder_rect.centerx = ws[0]/2
-        self.badorder_rect.centery = ws[1]/2
-        '''
-
         self.text_lines = [
-            "Please scan your barcode",
-            "some more text"
+            "Please scan your QR code",
         ]
-        
 
+        self.screen.fill(self.PRIMARY)
+        
         self.DEBOUNCE = pygame.USEREVENT+1
         self.SCANERROR = pygame.USEREVENT+2
         self.GOODORDER = pygame.USEREVENT+3
         self.BADORDER = pygame.USEREVENT+4
+        self.ORDERERROR = pygame.USEREVENT+5
 
         self.running = True
 
@@ -410,7 +390,8 @@ class DisplayUI:
 
 
         for i in range(len(self.text_lines)):
-            txt_surf = self.font.render(self.text_lines[i], True, self.BLACK, self.RED)
+            #txt_surf = self.font.render(self.text_lines[i], True, self.BLACK, self.RED)
+            txt_surf = self.font.render(self.text_lines[i], True, self.BLACK)
             txt_rect = txt_surf.get_rect()
             txt_rect.centerx = ws[0]/2
             #txt_rect.centery = self.header_rect.h*2 + (txt_rect.h+10)*i
@@ -420,8 +401,6 @@ class DisplayUI:
 
 
     async def run(self):
-        #message = self.scan_instruction
-        #message_rect = self.scan_instruction_rect
         while self.running:
             try:
                 event = q.get_nowait()
@@ -429,14 +408,23 @@ class DisplayUI:
                 print("got an event")
                 print(event)
                 if "error" in event:
-                    pygame.event.post(pygame.event.Event(self.SCANERROR))
+                    if event['error'] == "unable to parse qr code json":
+                        pygame.event.post(pygame.event.Event(self.SCANERROR))
+                    elif event['error'] in ["unknown item in order",
+                                            "invalid quantity",
+                                            "order missing items",
+                                            "order missing txnid"]:
+                        pygame.event.post(pygame.event.Event(self.BADORDER))
+                    elif event['error'] in ["item is restricted",
+                                            "item is out of stock"]:
+                        pygame.event.post(pygame.event.Event(self.ORDERERROR))
                 else:
                     if parse_order(event):
                         pygame.event.post(pygame.event.Event(self.GOODORDER))
-                    else:
-                        pygame.event.post(pygame.event.Event(self.BADORDER))
+                    #else:
+                    #    pygame.event.post(pygame.event.Event(self.BADORDER))
 
-                self.screen.fill(self.BLUE)
+                #self.screen.fill(self.BLUE)
             except asyncio.QueueEmpty:
                 pass
 
@@ -452,26 +440,38 @@ class DisplayUI:
                     for task in asyncio.all_tasks():
                         task.cancel()
                 if event.type == self.SCANERROR:
-                    self.screen.fill(self.RED)
-                    #message = self.error_instruction
-                    #message_rect = self.error_instruction_rect
+                    self.screen.fill(self.ERROR)
+                    self.text_lines.clear()
+                    self.text_lines.append("Unable to parse order")
+                    self.text_lines.append("See a Goon to complete your order")
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
                 if event.type == self.DEBOUNCE:
-                    self.screen.fill(self.BLACK)
-                    #message = self.scan_instruction
-                    #message_rect = self.scan_instruction_rect
+                    self.screen.fill(self.PRIMARY)
+                    self.text_lines.clear()
+                    self.text_lines.append("Please scan your QR code")
                 if event.type == self.GOODORDER:
-                    self.screen.fill(self.GREEN)
-                    #message = self.goodorder
-                    #message_rect = self.goodorder_rect
+                    self.screen.fill(self.SUCCESS)
+                    self.text_lines.clear()
+                    self.text_lines.append("Thank you for your order")
+                    self.text_lines.append("Please take your receipt")
+                    self.text_lines.append("Turn in the long receipt")
+                    self.text_lines.append("Keep the short receipt")
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
                 if event.type == self.BADORDER:
-                    self.screen.fill(self.RED)
-                    #message = self.badorder
-                    #message_rect = self.badorder_rect
+                    self.screen.fill(self.ERROR)
+                    self.text_lines.clear()
+                    self.text_lines.append("Unable to validate order")
+                    self.text_lines.append("Are you being naughty?")
+                    self.text_lines.append("See a Goon to for help")
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
-                    
-                    #self.screen.blit(self.error_instruction, self.error_instruction_rect)
+                if event.type == self.ORDERERROR:
+                    self.screen.fill(self.ERROR)
+                    self.text_lines.clear()
+                    self.text_lines.append("Unable to fulfill order")
+                    self.text_lines.append("Item out of stock")
+                    self.text_lines.append("See a Goon for help")
+                    pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
+
             pygame.display.update()
             await asyncio.sleep(0.1)
             
