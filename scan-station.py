@@ -116,6 +116,14 @@ class PrinterManager:
             return True
         return False
 
+    def make_order_line(self, sku, size, price):
+        item = sku+" : "+size
+        spaces_needed = 23-(len(item)+len(str(price)))
+        item+=" "*spaces_needed
+        item+="$"
+        item+=str(price)
+        return item
+
     def print_order(self, order):
         if not self.check_connection():
             self.connect()
@@ -131,11 +139,12 @@ class PrinterManager:
         total = 0
         for item in order["items"]:
             self.printer.set_with_default(align="left", custom_size=True, width=2, height=2)
-            self.printer.textln(f"{item['sku']} : {item['size']}")
+            #self.printer.textln(f"{item['sku']} : {item['size']}")
+            self.printer.textln(self.make_order_line(item['sku'], item['size'], item['price']))
             self.printer.set_with_default(custom_size=True, width=1, height=1)
             self.printer.textln(item['description'])
-            self.printer.set_with_default(align="right", double_height=True, double_width=True)
-            self.printer.text(f"${item['price']}")
+            #self.printer.set_with_default(align="right", double_height=True, double_width=True)
+            #self.printer.text(f"${item['price']}")
             self.printer.textln()
             self.printer.set_with_default()
         self.printer.set(align="center")
@@ -220,12 +229,18 @@ def parse_order(order):
     if "txn" not in order:
         q.put_nowait({"error": "order missing txnid"})
         return False
+    elif order["txn"] != "":
+        q.put_nowait({"error": "unexpected txn value"})
+        return False
     oi = []
 
     if 'i' in order:
         for item in order["i"]:
             print(item)
-            print(item['v'])
+            if "v" not in item or "q" not in item:
+                q.put_nowait({"error": "malformed order"})
+                print("malformed order")
+                return False
             if item['v'] in inventory.inventory:
                 if inventory.inventory[item['v']].restricted == "Y":
                     q.put_nowait({"error": "item is restricted"})
@@ -413,10 +428,12 @@ class DisplayUI:
                     elif event['error'] in ["unknown item in order",
                                             "invalid quantity",
                                             "order missing items",
-                                            "order missing txnid"]:
+                                            "order missing txnid",
+                                            "malformed order", 
+                                            "unexpected txn value"]:
                         pygame.event.post(pygame.event.Event(self.BADORDER))
                     elif event['error'] in ["item is restricted",
-                                            "item is out of stock"]:
+                                            "item out of stock"]:
                         pygame.event.post(pygame.event.Event(self.ORDERERROR))
                 else:
                     if parse_order(event):
