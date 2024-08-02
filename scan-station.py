@@ -60,6 +60,14 @@ class OrderDB:
                 order['items'].append({"variant_id": i[0], "quantity": i[1], "price_each_long": i[2]})
             orders.append({"id": o[0], "order": order})
         return orders
+    def get_order_count(self):
+        cursor = self.connection.execute("select count(id) from orders")
+        return cursor.fetchone()[0]
+    def get_unsynced_order_count(self):
+        cursor = self.connection.execute("select count(id) from orders where synced=false")
+        return cursor.fetchone()[0]
+
+        
 
 
 class Inventory:
@@ -385,7 +393,11 @@ class DisplayUI:
         self.font = pygame.font.Font('freesansbold.ttf', 64)
 
         self.text_lines = [
-            "Please scan your QR code",
+            #"Please scan your QR code",
+            f"Station has processed {odb.get_order_count()} orders",
+            f"{odb.get_unsynced_order_count()} orders are unsynced",
+            f"Station id: {os.environ['STATION']}",
+            f"printer ready: {pm.check_connection()}"
         ]
 
         self.screen.fill(self.PRIMARY)
@@ -395,8 +407,10 @@ class DisplayUI:
         self.GOODORDER = pygame.USEREVENT+3
         self.BADORDER = pygame.USEREVENT+4
         self.ORDERERROR = pygame.USEREVENT+5
+        self.INFO = pygame.USEREVENT+6
 
         self.running = True
+        pygame.time.set_timer(self.DEBOUNCE, 10000, loops=1)
 
     def render_text(self):
         rendered_fonts = []
@@ -435,6 +449,10 @@ class DisplayUI:
                     elif event['error'] in ["item is restricted",
                                             "item out of stock"]:
                         pygame.event.post(pygame.event.Event(self.ORDERERROR))
+                elif "control" in event:
+                    if event['control'] == "info":
+                        pygame.event.post(pygame.event.Event(self.INFO))
+
                 else:
                     if parse_order(event):
                         pygame.event.post(pygame.event.Event(self.GOODORDER))
@@ -488,6 +506,15 @@ class DisplayUI:
                     self.text_lines.append("Item out of stock")
                     self.text_lines.append("See a Goon for help")
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
+                if event.type == self.INFO:
+                    self.screen.fill(self.PRIMARY)
+                    self.text_lines.clear()
+                    self.text_lines.append(f"Station has processed {odb.get_order_count()} orders")
+                    self.text_lines.append(f"{odb.get_unsynced_order_count()} orders are unsynced")
+                    self.text_lines.append(f"Station id: {os.environ['STATION']}")
+                    self.text_lines.append(f"printer ready: {pm.check_connection()}")
+                    pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
+
 
             pygame.display.update()
             await asyncio.sleep(0.1)
@@ -510,6 +537,8 @@ async def main():
     odb = OrderDB(os.environ['DB_PATH'])
     bulk_sync_order()
     
+    print(f"processed {odb.get_order_count()} orders, {odb.get_unsynced_order_count} are unsynced")
+
     devices = []
     for filename in os.listdir("/dev/input/by-path"):
         devices.append(evdev.InputDevice("/dev/input/by-path/"+filename))
