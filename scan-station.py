@@ -281,11 +281,12 @@ def parse_order(order):
         id = odb.insert_order(eo)
 
         sorted_items = sorted(oi, key=lambda d: d['sku'])
+        order["txn"] = os.environ['STATION']+"-"+str(id)
         o = {"txn": os.environ['STATION']+"-"+str(id),
             "total": total,
             "count": count,
             "items": sorted_items,
-            "qr": order }
+            "qr": json.dumps(order) }
 
         pm.print_order(o)
 
