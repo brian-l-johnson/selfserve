@@ -73,24 +73,33 @@ class OrderDB:
 class Inventory:
     def __init__(self):
         self.inventory = {}
-        self.fetch_inventory()
-    def fetch_inventory(self):
+        #self.fetch_inventory()
+
+    async def periodicly_update_inventory(self):
+        while True:
+            await asyncio.sleep(60)
+            await self.fetch_inventory()
+
+
+
+    async def fetch_inventory(self):
         print("syncing inventory")
         try:
             print(os.environ['INVENTORY_URL'])
-            response = requests.get(os.environ['INVENTORY_URL'])
-            response.raise_for_status()
-            jsonResponse = response.json()
-            #print(jsonResponse)
-            for item in jsonResponse:
-                self.inventory[item['variant_id']] = InventoryItem(item['variant_id'],
-                                                              item['product_code'],
-                                                              item['product_title'],
-                                                              item['variant_code'],
-                                                              item['variant_price'],
-                                                              item['variant_stock_status'],
-                                                              item['product_is_eligibility_restricted'])
-            #print(self.inventory)
+            async with aiohttp.ClientSession() as session:
+                response = await session.get(os.environ['INVENTORY_URL'])
+                #response.raise_for_status()
+                jsonResponse = await response.json()
+                print(jsonResponse)
+                for item in jsonResponse:
+                    self.inventory[item['variant_id']] = InventoryItem(item['variant_id'],
+                                                                item['product_code'],
+                                                                item['product_title'],
+                                                                item['variant_code'],
+                                                                item['variant_price'],
+                                                                item['variant_stock_status'],
+                                                                item['product_is_eligibility_restricted'])
+                #print(self.inventory)
                 
         except HTTPError as http_err:
             print(f'HTTP error: {http_err}')
@@ -160,7 +169,7 @@ class PrinterManager:
         self.printer.set_with_default(align="right", custom_size=True, width=2, height=2)
         self.printer.textln(f"TOTAL: ${order['total']}")
         self.printer.set_with_default()
-        self.printer.textln("all prices include sales tax")
+        self.printer.textln("all prices include Nevada State sales tax")
         self.printer.set_with_default()
         self.printer.qr(order['qr'], size=9,center=True)
         self.printer.cut()
@@ -170,7 +179,7 @@ class PrinterManager:
         self.printer.textln(f"Total: ${order['total']}")
         self.printer.qr(order['qr'], size=9,center=True)
         self.printer.set_with_default()
-        self.printer.textln("all prices include sales tax")
+        self.printer.textln("all prices include Nevada State sales tax")
         self.printer.ln(3)
         self.printer.eject_slip()
         self.printer.cut()
@@ -299,7 +308,7 @@ def parse_order(order):
 
         print(orderobj)
         loop.create_task(sync_order(orderobj, id))
-        inventory.fetch_inventory()
+        #inventory.fetch_inventory()
         bulk_sync_order()
 
         return True
@@ -528,11 +537,15 @@ async def main():
     global loop
     loop = asyncio.get_event_loop()
 
+
+
     global pm
     pm = PrinterManager()
 
     global inventory
     inventory = Inventory()
+
+    loop.create_task(inventory.periodicly_update_inventory())
 
     global odb
     odb = OrderDB(os.environ['DB_PATH'])
@@ -542,7 +555,10 @@ async def main():
 
     devices = []
     for filename in os.listdir("/dev/input/by-path"):
-        devices.append(evdev.InputDevice("/dev/input/by-path/"+filename))
+        try:
+            devices.append(evdev.InputDevice("/dev/input/by-path/"+filename))
+        except Exception as err:
+            print(err)
     print(devices)
     
     for idx, device in enumerate(devices):
