@@ -35,6 +35,7 @@ class OrderDB:
         for item in order['i']:
             data.append((id, item['v'], item['q'], inventory.inventory[item['v']].price_long))
         cursor.executemany("INSERT INTO order_line (order_id, item, quantity, pricelong) VALUES(?, ?, ?, ?)", data)
+        self.connection.commit()
         return id
     def mark_order_synced(self, id):
         try:
@@ -309,7 +310,7 @@ def parse_order(order):
         print(orderobj)
         loop.create_task(sync_order(orderobj, id))
         #inventory.fetch_inventory()
-        bulk_sync_order()
+        #bulk_sync_order()
 
         return True
     else:
