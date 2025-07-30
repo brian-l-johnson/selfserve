@@ -13,6 +13,9 @@ import sqlite3
 import aiohttp
 from aiohttp.web_exceptions import HTTPError
 
+from decoder import decode
+from encoder import encode
+
 scanner_names = ["BF SCAN SCAN KEYBOARD"]
 q = asyncio.Queue()
 lock = asyncio.Lock()
@@ -23,7 +26,7 @@ class OrderDB:
             self.connection = sqlite3.connect(path)
             self.connection.execute("PRAGMA foreign_keys = 1")
             cursor = self.connection.cursor()
-            cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, t TIMESTAMP DEFAULT CURRENT_TIMESTAMP, items INTEGER, total INTEGER, synced BOOLEAN DEFAULT FALSE, errored BOOLEAN DEFAULT FALSE)")
             cursor.execute("CREATE TABLE IF NOT EXISTS order_line (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, item INTEGER, quantity INTEGER, pricelong INTEGER, FOREIGN KEY (order_id) REFERENCES orders (id))")
             self.connection.commit()
     def insert_order(self, order):
@@ -37,6 +40,13 @@ class OrderDB:
         cursor.executemany("INSERT INTO order_line (order_id, item, quantity, pricelong) VALUES(?, ?, ?, ?)", data)
         self.connection.commit()
         return id
+    def mark_order_errored(self, id):
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("UPDATE orders SET errored=TRUE where id = ?", (id,))
+            self.connection.commit()
+        except sqlite3.Error as err:
+            print(f"error updating order: {err}")
     def mark_order_synced(self, id):
         try:
             cursor = self.connection.cursor()
@@ -47,7 +57,7 @@ class OrderDB:
     def get_unsynced_orders(self):
         orders = []
         cursor = self.connection.cursor()
-        cursor.execute("SELECT id, total, t FROM orders WHERE synced=0")
+        cursor.execute("SELECT id, total, t FROM orders WHERE synced=0 AND errored=0")
         for o in cursor.fetchall():
             order = {}
             order['device_id'] = os.environ['DEVICE_ID']
@@ -65,7 +75,7 @@ class OrderDB:
         cursor = self.connection.execute("select count(id) from orders")
         return cursor.fetchone()[0]
     def get_unsynced_order_count(self):
-        cursor = self.connection.execute("select count(id) from orders where synced=false")
+        cursor = self.connection.execute("select count(id) from orders where synced=false and errored=false")
         return cursor.fetchone()[0]
 
         
@@ -172,13 +182,13 @@ class PrinterManager:
         self.printer.set_with_default()
         self.printer.textln("all prices include Nevada State sales tax")
         self.printer.set_with_default()
-        self.printer.qr(order['qr'], size=9,center=True)
+        self.printer.qr(order['qr-compact'], size=9,center=True)
         self.printer.cut()
         self.printer.set(align="center", custom_size=True, width=3, height=3, density=8)
         self.printer.image("/home/bj/logo.png")
         self.printer.textln(f"Order: {order['txn']}")
         self.printer.textln(f"Total: ${order['total']}")
-        self.printer.qr(order['qr'], size=9,center=True)
+        self.printer.qr(order['qr-compact'], size=9,center=True)
         self.printer.set_with_default()
         self.printer.textln("all prices include Nevada State sales tax")
         self.printer.ln(3)
@@ -230,6 +240,10 @@ async def sync_order(orderobj, id):
 
 def parse_order(order):
     print(order)
+
+    #decoded_order = decode(order)
+    #print(decoded_order)
+
     total = 0
     count = 0
 
@@ -238,7 +252,7 @@ def parse_order(order):
 
     order_keys = order.keys()
     for k in order_keys:
-        if k not in ["i", "txn"]:
+        if k not in ["i", "txn", "cc", "p"]:
             q.put_nowait({"error": "unknown item in order"})
             return False
     if "i" not in order:
@@ -296,21 +310,28 @@ def parse_order(order):
             "total": total,
             "count": count,
             "items": sorted_items,
-            "qr": json.dumps(order) }
+            "qr": json.dumps(order),
+            "qr-compact": encode(order) }
 
-        pm.print_order(o)
+        try:
+            pm.print_order(o)
 
-        orderobj['device_id'] = os.environ['DEVICE_ID']
-        orderobj['conference_id'] = os.environ['CONFERENCE_ID']
-        orderobj['passcode'] = os.environ['PASSCODE']
-        orderobj['timestamp'] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S-00:00")
-        orderobj['txn_num'] = os.environ['STATION']+"-"+str(id)
-        orderobj['items'] = items
+            orderobj['device_id'] = os.environ['DEVICE_ID']
+            orderobj['conference_id'] = os.environ['CONFERENCE_ID']
+            orderobj['passcode'] = os.environ['PASSCODE']
+            orderobj['timestamp'] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S-00:00")
+            orderobj['txn_num'] = os.environ['STATION']+"-"+str(id)
+            orderobj['items'] = items
 
-        print(orderobj)
-        loop.create_task(sync_order(orderobj, id))
-        #inventory.fetch_inventory()
-        #bulk_sync_order()
+            print(orderobj)
+            loop.create_task(sync_order(orderobj, id))
+            #inventory.fetch_inventory()
+            #bulk_sync_order()
+        except Exception as e:
+            odb.mark_order_errored(id)
+            print("failed to print order")
+            q.put_nowait({"error": "unable to print receipt"})
+            #todo display error
 
         return True
     else:
@@ -365,13 +386,17 @@ async def handle_barcode_scan(device):
                 if (data.scancode == RETURN):
                     print(pending_string)
                     try:
-                        data = json.loads(pending_string)
+                        #data = json.loads(pending_string)
+                        data = decode(pending_string)
                         await q.put(data)
                         print("put a scan on the queue")
                     except json.JSONDecodeError:
                         print("unable to parse json")
                         data = {"error": "unable to parse qr code json"}
-                        await q.put(data)                    
+                        await q.put(data)
+                    except ValueError:
+                        print("unable to decode order")
+                        await q.put({"error": "malformed order"})                    
                     pending_string = ''
                 elif (data.scancode != LEFT_SHIFT) and (key_lookup != None):
                     pending_string += key_lookup
@@ -388,15 +413,23 @@ class DisplayUI:
         self.RED = (255, 0, 0)
         self.BLACK = (0,0,0)
 
-        self.TEXT = (255, 172, 11)
-        self.PRIMARY = (137,43,225)
-        self.SUCCESS = (10, 121, 133)
-        self.ERROR = (219, 22, 117)
+        #self.TEXT = (255, 172, 11)
+        #self.PRIMARY = (137,43,225)
+        #self.SUCCESS = (10, 121, 133)
+        #self.ERROR = (219, 22, 117)
+        #A37
+        self.TEXT = (170, 51, 119)
+        #47A
+        self.PRIMARY = (68, 119, 179)
+        #283
+        self.SUCCESS = (34, 136, 51)
+        #CB4
+        self.ERROR = (204, 187, 68)
 
         ws = pygame.display.get_window_size()
 
         self.header_font = pygame.font.Font('freesansbold.ttf', 96)
-        self.header = self.header_font.render('DEF CON 32 Merch', True, self.TEXT)
+        self.header = self.header_font.render('DEF CON 33 Merch', True, self.TEXT)
         self.header_rect = self.header.get_rect()
         self.header_rect.centerx = ws[0]/2
         self.header_rect.centery = 56
@@ -419,6 +452,7 @@ class DisplayUI:
         self.BADORDER = pygame.USEREVENT+4
         self.ORDERERROR = pygame.USEREVENT+5
         self.INFO = pygame.USEREVENT+6
+        self.PRINTERROR = pygame.USEREVENT+7
 
         self.running = True
         pygame.time.set_timer(self.DEBOUNCE, 10000, loops=1)
@@ -460,6 +494,8 @@ class DisplayUI:
                     elif event['error'] in ["item is restricted",
                                             "item out of stock"]:
                         pygame.event.post(pygame.event.Event(self.ORDERERROR))
+                    elif event['error'] == "unable to print receipt":
+                        pygame.event.post(pygame.event.Event(self.PRINTERROR))
                 elif "control" in event:
                     if event['control'] == "info":
                         pygame.event.post(pygame.event.Event(self.INFO))
@@ -489,6 +525,12 @@ class DisplayUI:
                     self.screen.fill(self.ERROR)
                     self.text_lines.clear()
                     self.text_lines.append("Unable to parse order")
+                    self.text_lines.append("See a Goon to complete your order")
+                    pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
+                if event.type == self.PRINTERROR:
+                    self.screen.fill(self.ERROR)
+                    self.text_lines.clear()
+                    self.text_lines.append("Unable to process order")
                     self.text_lines.append("See a Goon to complete your order")
                     pygame.time.set_timer(self.DEBOUNCE, 5000, loops=1)
                 if event.type == self.DEBOUNCE:
